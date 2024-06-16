@@ -364,7 +364,7 @@ func main() {
 		http.FileServer(http.Dir("../public")).ServeHTTP(w, r)
 	})
 
-	log.Fatal(http.ListenAndServe(":8000", r))
+	log.Fatal(http.ListenAndServe(":80", r))
 }
 
 func getSession(r *http.Request) *sessions.Session {
