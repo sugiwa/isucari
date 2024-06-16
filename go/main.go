@@ -62,7 +62,7 @@ const (
 var (
 	templates *template.Template
 	dbx       *sqlx.DB
-	store     sessions.Store
+	store     *sessions.CookieStore
 )
 
 type Config struct {
@@ -270,6 +270,12 @@ type resSetting struct {
 
 func init() {
 	store = sessions.NewCookieStore([]byte("abc"))
+	store.Options = &sessions.Options{
+		Path: "/",
+		MaxAge: 3600,
+		HttpOnly: true,
+		Secure: false,
+	}
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
