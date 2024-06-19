@@ -65,6 +65,8 @@ var (
 	store     *sessions.CookieStore
 )
 
+var categoryCache = make(map[int]Category)
+
 type Config struct {
 	Name string `json:"name" db:"name"`
 	Val  string `json:"val" db:"val"`
@@ -416,7 +418,19 @@ func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err
 }
 
 func getCategoryByID(q sqlx.Queryer, categoryID int) (category Category, err error) {
+	if category, found := categoryCache[categoryID]; found {
+		if category.ParentID != 0 {
+			parentCategory, err := getCategoryByID(q, category.ParentID)
+			if err != nil {
+				return category, err
+			}
+			category.ParentCategoryName = parentCategory.CategoryName
+		}
+		return category, err
+	}
+
 	err = sqlx.Get(q, &category, "SELECT * FROM `categories` WHERE `id` = ?", categoryID)
+	categoryCache[categoryID] = category
 	if category.ParentID != 0 {
 		parentCategory, err := getCategoryByID(q, category.ParentID)
 		if err != nil {
