@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -66,6 +67,11 @@ var (
 )
 
 var categoryCache = make(map[int]Category)
+
+var (
+	userCache = make(map[int64]*User)
+	userCacheMux = sync.RWMutex{}
+) 
 
 type Config struct {
 	Name string `json:"name" db:"name"`
@@ -393,6 +399,16 @@ func getUser(r *http.Request) (user User, errCode int, errMsg string) {
 		return user, http.StatusNotFound, "no session"
 	}
 
+	// キャッシュあり
+	userCacheMux.RLock()
+	if cacheUser, found := userCache[userID.(int64)]; found {
+		defer userCacheMux.RUnlock()
+		return *cacheUser, http.StatusOK, ""
+	}
+	userCacheMux.RUnlock()
+
+	userCacheMux.Lock()
+	defer userCacheMux.Unlock()
 	err := dbx.Get(&user, "SELECT * FROM `users` WHERE `id` = ?", userID)
 	if err == sql.ErrNoRows {
 		return user, http.StatusNotFound, "user not found"
@@ -402,15 +418,31 @@ func getUser(r *http.Request) (user User, errCode int, errMsg string) {
 		return user, http.StatusInternalServerError, "db error"
 	}
 
+	userCache[userID.(int64)] = &user
+
 	return user, http.StatusOK, ""
 }
 
 func getUserSimpleByID(q sqlx.Queryer, userID int64) (userSimple UserSimple, err error) {
+	// キャッシュあり
+	userCacheMux.RLock()
+	if cacheUser, found := userCache[userID]; found {
+		defer userCacheMux.RUnlock()
+		userSimple.ID = cacheUser.ID
+		userSimple.AccountName = cacheUser.AccountName
+		userSimple.NumSellItems = cacheUser.NumSellItems
+		return userSimple, err
+	}
+	userCacheMux.RUnlock()
+
+	userCacheMux.Lock()
+	defer userCacheMux.Unlock()
 	user := User{}
 	err = sqlx.Get(q, &user, "SELECT * FROM `users` WHERE `id` = ?", userID)
 	if err != nil {
 		return userSimple, err
 	}
+	userCache[user.ID] = &user
 	userSimple.ID = user.ID
 	userSimple.AccountName = user.AccountName
 	userSimple.NumSellItems = user.NumSellItems
@@ -511,6 +543,21 @@ func postInitialize(w http.ResponseWriter, r *http.Request) {
 		log.Print(err)
 		outputErrorMsg(w, http.StatusInternalServerError, "db error")
 		return
+	}
+
+	users := []*User{}
+	err = dbx.Select(&users, "SELECT * FROM users")
+	if err != nil {
+		log.Print(err)
+		outputErrorMsg(w, http.StatusInternalServerError, "initialized user error")
+		return
+	}
+
+	userCacheMux.Lock()
+	defer userCacheMux.Unlock()
+	userCache = make(map[int64]*User)
+	for _, user := range users {
+		userCache[user.ID] = user
 	}
 
 	res := resInitialize{
@@ -2035,6 +2082,11 @@ func postSell(w http.ResponseWriter, r *http.Request) {
 	}
 	tx.Commit()
 
+	userCacheMux.Lock()
+	userCache[seller.ID].NumSellItems++
+	userCache[seller.ID].LastBump = now
+	userCacheMux.Unlock()
+	
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(resSell{ID: itemID})
 }
@@ -2143,6 +2195,9 @@ func postBump(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tx.Commit()
+	userCacheMux.Lock()
+	userCache[seller.ID].LastBump = now
+	userCacheMux.Unlock()
 
 	w.Header().Set("Content-Type", "application/json;charset=utf-8")
 	json.NewEncoder(w).Encode(&resItemEdit{
@@ -2289,6 +2344,8 @@ func postRegister(w http.ResponseWriter, r *http.Request) {
 		AccountName: accountName,
 		Address:     address,
 	}
+
+	getUserSimpleByID(dbx,  userID)
 
 	session := getSession(r)
 	session.Values["user_id"] = u.ID
